@@ -12,7 +12,6 @@ local pixelLoadAttempted = false
 local arrowLoadAttempted = false
 local attachAttemptLogged = false
 local overlayAttachedLogged = false
-local slotRectErrorLogged = false
 local updateErrorLogged = false
 local openToggleLocked = false
 local hideToggleLocked = false
@@ -98,6 +97,20 @@ local function color(value, fallbackAlpha)
         A = value.A or fallbackAlpha or 1.0,
     }
 end
+
+local COLOR_BLACK = { R = 0.0, G = 0.0, B = 0.0, A = 0.45 }
+local COLOR_WHITE = { R = 1.0, G = 1.0, B = 1.0, A = 1.0 }
+local COLOR_BORDER = { R = 0.0, G = 0.8, B = 1.0, A = 0.85 }
+local COLOR_MARKER = color((Config.Marker or {}).Color, 1.0)
+
+local lastWorldX = nil
+local lastWorldY = nil
+local lastForwardX = nil
+local lastForwardY = nil
+
+local cachedPawn = CreateInvalidObject()
+local pawnCheckCountdown = 0
+local PAWN_CHECK_INTERVAL = 10
 
 local function clamp(value, minValue, maxValue)
     if value < minValue then return minValue end
@@ -433,34 +446,22 @@ end
 
 local function setSlotAnchors(slot, minX, minY, maxX, maxY, zOrder)
     if not slot or not slot:IsValid() then return end
-    local ok, err = pcall(function()
-        slot:SetMinimum(vec2(minX, minY))
-        slot:SetMaximum(vec2(maxX, maxY))
-        slot:SetAlignment(vec2(0.0, 0.0))
-        slot:SetAutoSize(false)
-        if zOrder then slot:SetZOrder(zOrder) end
-    end)
-    if not ok and not slotRectErrorLogged then
-        slotRectErrorLogged = true
-        log("Failed to anchor CanvasPanelSlot: " .. tostring(err))
-    end
+    slot:SetMinimum(vec2(minX, minY))
+    slot:SetMaximum(vec2(maxX, maxY))
+    slot:SetAlignment(vec2(0.0, 0.0))
+    slot:SetAutoSize(false)
+    if zOrder then slot:SetZOrder(zOrder) end
 end
 
 local function setSlotFill(slot, zOrder)
     if not slot or not slot:IsValid() then return end
-    local ok, err = pcall(function()
-        slot:SetMinimum(vec2(0.0, 0.0))
-        slot:SetMaximum(vec2(1.0, 1.0))
-        slot:SetPosition(vec2(0.0, 0.0))
-        slot:SetSize(vec2(0.0, 0.0))
-        slot:SetAlignment(vec2(0.0, 0.0))
-        slot:SetAutoSize(false)
-        if zOrder then slot:SetZOrder(zOrder) end
-    end)
-    if not ok and not slotRectErrorLogged then
-        slotRectErrorLogged = true
-        log("Failed to fill CanvasPanelSlot: " .. tostring(err))
-    end
+    slot:SetMinimum(vec2(0.0, 0.0))
+    slot:SetMaximum(vec2(1.0, 1.0))
+    slot:SetPosition(vec2(0.0, 0.0))
+    slot:SetSize(vec2(0.0, 0.0))
+    slot:SetAlignment(vec2(0.0, 0.0))
+    slot:SetAutoSize(false)
+    if zOrder then slot:SetZOrder(zOrder) end
 end
 
 local function setSlotTopLeft(slot, zOrder)
@@ -509,21 +510,21 @@ local function attachOverlay()
     local pixel = loadPixelTexture()
     local map = loadMapTexture()
 
-    overlay.dim, overlay.dimSlot = createImage(overlay.canvas, widgetOuter, 980, pixel, { R = 0.0, G = 0.0, B = 0.0, A = 0.45 })
+    overlay.dim, overlay.dimSlot = createImage(overlay.canvas, widgetOuter, 980, pixel, COLOR_BLACK)
     setSlotFill(overlay.dimSlot, 980)
-    overlay.map, overlay.mapSlot = createImage(overlay.canvas, widgetOuter, 990, map, { R = 1.0, G = 1.0, B = 1.0, A = 1.0 })
+    overlay.map, overlay.mapSlot = createImage(overlay.canvas, widgetOuter, 990, map, COLOR_WHITE)
     setSlotTopLeft(overlay.mapSlot, 990)
     overlay.mapTextureApplied = map:IsValid()
-    overlay.borderTop, overlay.borderTopSlot = createImage(overlay.canvas, widgetOuter, 991, pixel, { R = 0.0, G = 0.8, B = 1.0, A = 0.85 })
+    overlay.borderTop, overlay.borderTopSlot = createImage(overlay.canvas, widgetOuter, 991, pixel, COLOR_BORDER)
     setSlotTopLeft(overlay.borderTopSlot, 991)
-    overlay.borderRight, overlay.borderRightSlot = createImage(overlay.canvas, widgetOuter, 991, pixel, { R = 0.0, G = 0.8, B = 1.0, A = 0.85 })
+    overlay.borderRight, overlay.borderRightSlot = createImage(overlay.canvas, widgetOuter, 991, pixel, COLOR_BORDER)
     setSlotTopLeft(overlay.borderRightSlot, 991)
-    overlay.borderBottom, overlay.borderBottomSlot = createImage(overlay.canvas, widgetOuter, 991, pixel, { R = 0.0, G = 0.8, B = 1.0, A = 0.85 })
+    overlay.borderBottom, overlay.borderBottomSlot = createImage(overlay.canvas, widgetOuter, 991, pixel, COLOR_BORDER)
     setSlotTopLeft(overlay.borderBottomSlot, 991)
-    overlay.borderLeft, overlay.borderLeftSlot = createImage(overlay.canvas, widgetOuter, 991, pixel, { R = 0.0, G = 0.8, B = 1.0, A = 0.85 })
+    overlay.borderLeft, overlay.borderLeftSlot = createImage(overlay.canvas, widgetOuter, 991, pixel, COLOR_BORDER)
     setSlotTopLeft(overlay.borderLeftSlot, 991)
     local arrow = loadArrowTexture()
-    overlay.marker, overlay.markerSlot = createImage(overlay.canvas, widgetOuter, 1001, arrow, color((Config.Marker or {}).Color, 1.0))
+    overlay.marker, overlay.markerSlot = createImage(overlay.canvas, widgetOuter, 1001, arrow, COLOR_MARKER)
     setSlotTopLeft(overlay.markerSlot, 1001)
     overlay.markerTextureApplied = arrow:IsValid()
 
@@ -545,26 +546,14 @@ end
 
 local function setSlotRect(slot, x, y, width, height, zOrder)
     if not slot or not slot:IsValid() then return end
-    local ok, err = pcall(function()
-        slot:SetPosition(vec2(x, y))
-        slot:SetSize(vec2(width, height))
-        if zOrder then slot:SetZOrder(zOrder) end
-    end)
-    if not ok and not slotRectErrorLogged then
-        slotRectErrorLogged = true
-        log("CanvasPanel slot does not support position/size: " .. tostring(err))
-    end
+    slot:SetPosition(vec2(x, y))
+    slot:SetSize(vec2(width, height))
+    if zOrder then slot:SetZOrder(zOrder) end
 end
 
 local function setSlotPosition(slot, x, y)
     if not slot or not slot:IsValid() then return end
-    local ok, err = pcall(function()
-        slot:SetPosition(vec2(x, y))
-    end)
-    if not ok and not slotRectErrorLogged then
-        slotRectErrorLogged = true
-        log("CanvasPanel slot does not support position: " .. tostring(err))
-    end
+    slot:SetPosition(vec2(x, y))
 end
 
 local function getViewportSize()
@@ -735,9 +724,13 @@ local function worldToMapGenieUV(worldX, worldY)
 end
 
 local function getPlayerLocationAndForward()
-    local pawn = UEHelpers.GetPlayer()
-    if not pawn:IsValid() then return nil, nil end
-    return pawn:K2_GetActorLocation(), pawn:GetActorForwardVector()
+    pawnCheckCountdown = pawnCheckCountdown - 1
+    if pawnCheckCountdown <= 0 or not cachedPawn:IsValid() then
+        cachedPawn = UEHelpers.GetPlayer()
+        pawnCheckCountdown = PAWN_CHECK_INTERVAL
+    end
+    if not cachedPawn:IsValid() then return nil, nil end
+    return cachedPawn:K2_GetActorLocation(), cachedPawn:GetActorForwardVector()
 end
 
 local function sampleToMapPoint(sample, mapX, mapY, mapW, mapH, out)
@@ -780,7 +773,20 @@ end
 local function markOverlayStateDirty(forceViewport)
     overlayGeneration = overlayGeneration + 1
     resetOverlayCaches()
+    lastWorldX = nil
     if forceViewport ~= false then viewportDirty = true end
+end
+
+local function hasPlayerMoved(worldX, worldY, forwardX, forwardY)
+    if not lastWorldX then return true end
+    local threshold = (Config.Marker or {}).WorldMoveThreshold or 50.0
+    local dx = worldX - lastWorldX
+    local dy = worldY - lastWorldY
+    if (dx * dx + dy * dy) >= (threshold * threshold) then return true end
+    local dfx = forwardX - (lastForwardX or 0)
+    local dfy = forwardY - (lastForwardY or 0)
+    if (dfx * dfx + dfy * dfy) > 0.001 then return true end
+    return false
 end
 
 local function collectFrameSample()
@@ -800,13 +806,27 @@ local function collectFrameSample()
     end
 
     local location, forward = getPlayerLocationAndForward()
-    if not location then return end
+    if not location then return nil end
+
+    local worldX = getAxisValue(location, Config.Map.HorizontalAxis) or 0.0
+    local worldY = getAxisValue(location, Config.Map.VerticalAxis) or 0.0
+    local forwardX = forward and (getAxisValue(forward, Config.Map.HorizontalAxis) or 1.0) or 1.0
+    local forwardY = forward and (getAxisValue(forward, Config.Map.VerticalAxis) or 0.0) or 0.0
+
+    if not hasPlayerMoved(worldX, worldY, forwardX, forwardY) and not viewportDirty then
+        return nil
+    end
+
+    lastWorldX = worldX
+    lastWorldY = worldY
+    lastForwardX = forwardX
+    lastForwardY = forwardY
 
     sample.hidden = false
-    sample.worldX = getAxisValue(location, Config.Map.HorizontalAxis) or 0.0
-    sample.worldY = getAxisValue(location, Config.Map.VerticalAxis) or 0.0
-    sample.forwardX = forward and (getAxisValue(forward, Config.Map.HorizontalAxis) or 1.0) or 1.0
-    sample.forwardY = forward and (getAxisValue(forward, Config.Map.VerticalAxis) or 0.0) or 0.0
+    sample.worldX = worldX
+    sample.worldY = worldY
+    sample.forwardX = forwardX
+    sample.forwardY = forwardY
 
     return sample
 end
@@ -927,17 +947,21 @@ local function applyDrawState(state)
     if not overlay.mapTextureApplied then
         local map = loadMapTexture()
         if map:IsValid() then
-            setImageTexture(overlay.map, map, { R = 1.0, G = 1.0, B = 1.0, A = layout.MapAlpha or 1.0 })
+            COLOR_WHITE.A = layout.MapAlpha or 1.0
+            setImageTexture(overlay.map, map, COLOR_WHITE)
+            COLOR_WHITE.A = 1.0
             overlay.mapTextureApplied = true
         end
     elseif layoutChanged and overlay.map:IsValid() then
-        overlay.map:SetColorAndOpacity({ R = 1.0, G = 1.0, B = 1.0, A = layout.MapAlpha or 1.0 })
+        COLOR_WHITE.A = layout.MapAlpha or 1.0
+        overlay.map:SetColorAndOpacity(COLOR_WHITE)
+        COLOR_WHITE.A = 1.0
     end
 
     if not overlay.markerTextureApplied then
         local arrow = loadArrowTexture()
         if arrow:IsValid() then
-            setImageTexture(overlay.marker, arrow, color((Config.Marker or {}).Color, 1.0))
+            setImageTexture(overlay.marker, arrow, COLOR_MARKER)
             overlay.markerTextureApplied = true
         end
     end
@@ -946,7 +970,10 @@ local function applyDrawState(state)
         rememberLayoutState(state)
         setCachedWidgetVisibility("lastDimVisible", overlay.dim, state.layoutDimVisible)
         setSlotFill(overlay.dimSlot, 980)
-        if overlay.dim:IsValid() then overlay.dim:SetColorAndOpacity({ R = 0.0, G = 0.0, B = 0.0, A = layout.BackgroundAlpha or 0.45 }) end
+        if overlay.dim:IsValid() then
+            COLOR_BLACK.A = layout.BackgroundAlpha or 0.45
+            overlay.dim:SetColorAndOpacity(COLOR_BLACK)
+        end
 
         setSlotRect(overlay.mapSlot, state.x, state.y, state.width, state.height, 990)
         setSlotRect(overlay.borderTopSlot, state.x, state.y, state.width, state.thickness, 991)
@@ -990,22 +1017,8 @@ end
 
 local function processFrameSample(sample)
     if not sample then return end
-
-    local ok, stateOrErr = pcall(function() return buildDrawState(sample) end)
-    if not ok then
-        if not updateErrorLogged then
-            updateErrorLogged = true
-            log("Build overlay failed: " .. tostring(stateOrErr))
-        end
-        return
-    end
-
-    local state = stateOrErr
-    ok, stateOrErr = pcall(function() applyDrawState(state) end)
-    if not ok and not updateErrorLogged then
-        updateErrorLogged = true
-        log("Apply overlay failed: " .. tostring(stateOrErr))
-    end
+    local state = buildDrawState(sample)
+    applyDrawState(state)
 end
 
 local function resetOverlay()
@@ -1020,7 +1033,30 @@ local function resetOverlay()
     mapTexture = CreateInvalidObject()
     pixelTexture = CreateInvalidObject()
     arrowTexture = CreateInvalidObject()
+    cachedPawn = CreateInvalidObject()
+    pawnCheckCountdown = 0
     viewportPollCountdown = 0
+    lastWorldX = nil
+    lastWorldY = nil
+    lastForwardX = nil
+    lastForwardY = nil
+end
+
+local function gameThreadUpdate()
+    sampleQueued = false
+    local sample = collectFrameSample()
+    if sample then
+        processFrameSample(sample)
+    end
+end
+
+local function gameThreadUpdateSafe()
+    sampleQueued = false
+    local ok, err = pcall(gameThreadUpdate)
+    if not ok and not updateErrorLogged then
+        updateErrorLogged = true
+        log("Update failed: " .. tostring(err))
+    end
 end
 
 local function requestUpdate()
@@ -1028,16 +1064,7 @@ local function requestUpdate()
     if not isMapActive() and not needsHiddenApply() then return end
 
     sampleQueued = true
-    ExecuteInGameThread(function()
-        sampleQueued = false
-        local ok, sampleOrErr = pcall(collectFrameSample)
-        if not ok and not updateErrorLogged then
-            updateErrorLogged = true
-            log("Sample overlay failed: " .. tostring(sampleOrErr))
-        elseif ok and sampleOrErr then
-            processFrameSample(sampleOrErr)
-        end
-    end)
+    ExecuteInGameThread(gameThreadUpdateSafe)
 end
 
 local function translateModifiers(modifierNames)

@@ -7,7 +7,7 @@ local Config = {
     HideMapModifiers = {},
 
     ShowMinimapAtStartup = true,
-    UpdateIntervalMs = 100,
+    UpdateIntervalMs = 200,
     ViewportPollIntervalMs = 1000,
     KeyDebounceMs = 600,
 
@@ -70,8 +70,9 @@ local Config = {
     Marker = {
         ImageFile = "MapArrowRight.png",
         Size = 12,
-        MoveThresholdPixels = 1,
-        HeadingThresholdDegrees = 1,
+        MoveThresholdPixels = 4,
+        HeadingThresholdDegrees = 3,
+        WorldMoveThreshold = 150.0,
         Color = { R = 0.0, G = 0.9, B = 1.0, A = 1.0 },
     },
 
