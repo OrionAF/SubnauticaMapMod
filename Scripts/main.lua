@@ -564,6 +564,12 @@ local function getViewportSize()
             return layout:GetViewportSize(world)
         end)
         if size and size.X and size.Y and size.X > 0 and size.Y > 0 then
+            local scale = safeCall("GetViewportScale", function()
+                return layout:GetViewportScale(world)
+            end)
+            if scale and scale > 0 and scale ~= 1.0 then
+                return size.X / scale, size.Y / scale
+            end
             return size.X, size.Y
         end
     end
