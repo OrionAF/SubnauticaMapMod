@@ -7,7 +7,9 @@ local Config = {
     HideMapModifiers = {},
 
     ShowMinimapAtStartup = true,
-    UpdateIntervalMs = 200,
+    UpdateIntervalMs = 500,
+    AttachInitialDelayMs = 250,
+    AttachRetryDelaysMs = { 250, 500, 1000, 2000, 5000 },
     ViewportPollIntervalMs = 1000,
     KeyDebounceMs = 600,
 
@@ -48,6 +50,7 @@ local Config = {
 
     Minimap = {
         Enabled = true,
+        UpdateIntervalMs = 500,
         Anchor = "TopRight",
         Width = 360,
         MarginTop = 24,
@@ -58,6 +61,7 @@ local Config = {
     },
 
     LargeMap = {
+        UpdateIntervalMs = 100,
         Anchor = "Center",
         WidthRatio = 0.90,
         HeightRatio = 0.72,

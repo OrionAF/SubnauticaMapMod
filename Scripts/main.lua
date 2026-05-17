@@ -4,12 +4,18 @@ local Config = require("config")
 local MOD_NAME = "SubnauticaMapMod"
 local VISIBLE = 3 -- ESlateVisibility::HitTestInvisible
 local HIDDEN = 2  -- ESlateVisibility::Hidden
+local DEFAULT_ATTACH_RETRY_DELAYS_MS = { 250, 500, 1000, 2000, 5000 }
 
 local mapVisible = Config.ShowMinimapAtStartup ~= false
 local largeMapOpen = false
 local textureLoadAttempted = false
 local pixelLoadAttempted = false
 local arrowLoadAttempted = false
+local attachAttemptQueued = false
+local attachAttemptToken = 0
+local attachRetryIndex = 1
+local updateLoopActive = false
+local updateLoopToken = 0
 local attachAttemptLogged = false
 local overlayAttachedLogged = false
 local updateErrorLogged = false
@@ -551,9 +557,9 @@ local function setSlotRect(slot, x, y, width, height, zOrder)
     if zOrder then slot:SetZOrder(zOrder) end
 end
 
-local function setSlotPosition(slot, x, y)
-    if not slot or not slot:IsValid() then return end
-    slot:SetPosition(vec2(x, y))
+local function setWidgetRenderTranslation(widget, x, y)
+    if not widget or not widget:IsValid() then return end
+    widget:SetRenderTranslation(vec2(x, y))
 end
 
 local function getViewportSize()
@@ -578,6 +584,11 @@ end
 
 local function getViewportPollSampleCount()
     local interval = Config.UpdateIntervalMs or 100
+    if largeMapOpen and Config.LargeMap and Config.LargeMap.UpdateIntervalMs then
+        interval = Config.LargeMap.UpdateIntervalMs
+    elseif Config.Minimap and Config.Minimap.UpdateIntervalMs then
+        interval = Config.Minimap.UpdateIntervalMs
+    end
     local pollInterval = Config.ViewportPollIntervalMs or 1000
     if interval <= 0 then return 10 end
     local count = math.floor((pollInterval / interval) + 0.5)
@@ -1010,10 +1021,9 @@ local function applyDrawState(state)
     overlay.lastMarkerSize = size
 
     if shapeChanged then
-        setSlotRect(overlay.markerSlot, state.point.X - size, state.point.Y - size, size * 2, size * 2, 1001)
-    else
-        setSlotPosition(overlay.markerSlot, state.point.X - size, state.point.Y - size)
+        setSlotRect(overlay.markerSlot, 0.0, 0.0, size * 2, size * 2, 1001)
     end
+    setWidgetRenderTranslation(overlay.marker, state.point.X - size, state.point.Y - size)
 
     if overlay.lastHeadingAngleKey ~= state.angleKey then
         overlay.lastHeadingAngleKey = state.angleKey
@@ -1046,6 +1056,7 @@ local function resetOverlay()
     lastWorldY = nil
     lastForwardX = nil
     lastForwardY = nil
+    attachRetryIndex = 1
 end
 
 local function gameThreadUpdate()
@@ -1071,6 +1082,136 @@ local function requestUpdate()
 
     sampleQueued = true
     ExecuteInGameThread(gameThreadUpdateSafe)
+end
+
+local scheduleAttachAttempt
+
+local function getActiveUpdateIntervalMs()
+    local fallback = Config.UpdateIntervalMs or 200
+    if largeMapOpen then
+        return (Config.LargeMap and Config.LargeMap.UpdateIntervalMs) or fallback
+    end
+    return (Config.Minimap and Config.Minimap.UpdateIntervalMs) or fallback
+end
+
+local function cancelAttachAttempt()
+    attachAttemptToken = attachAttemptToken + 1
+    attachAttemptQueued = false
+end
+
+local function stopUpdateLoop()
+    if not updateLoopActive then return end
+    updateLoopToken = updateLoopToken + 1
+    updateLoopActive = false
+end
+
+local function startUpdateLoop()
+    if updateLoopActive then return end
+
+    updateLoopActive = true
+    updateLoopToken = updateLoopToken + 1
+    local token = updateLoopToken
+
+    local function tick()
+        if token ~= updateLoopToken then return end
+        if not isMapActive() and not needsHiddenApply() then
+            updateLoopActive = false
+            return
+        end
+        if not overlay.canvas:IsValid() then
+            updateLoopActive = false
+            if isMapActive() then scheduleAttachAttempt(Config.AttachInitialDelayMs or 250) end
+            return
+        end
+
+        requestUpdate()
+        ExecuteWithDelay(getActiveUpdateIntervalMs(), tick)
+    end
+
+    ExecuteWithDelay(getActiveUpdateIntervalMs(), tick)
+end
+
+local function restartUpdateLoop()
+    stopUpdateLoop()
+    startUpdateLoop()
+end
+
+local function getAttachRetryDelayMs()
+    local delays = Config.AttachRetryDelaysMs or DEFAULT_ATTACH_RETRY_DELAYS_MS
+    local count = #delays
+    if count <= 0 then return 1000 end
+
+    local index = attachRetryIndex
+    if index > count then index = count end
+    attachRetryIndex = attachRetryIndex + 1
+    return delays[index] or 1000
+end
+
+local function runAttachAttemptSafe()
+    attachAttemptQueued = false
+    if overlay.canvas:IsValid() then
+        attachRetryIndex = 1
+        startUpdateLoop()
+        requestUpdate()
+        return
+    end
+    if not isMapActive() then return end
+
+    local ok, attached = pcall(attachOverlay)
+    if not ok then
+        log("Attach failed: " .. tostring(attached))
+        attached = false
+    end
+
+    if attached then
+        attachRetryIndex = 1
+        startUpdateLoop()
+        requestUpdate()
+    else
+        scheduleAttachAttempt(getAttachRetryDelayMs())
+    end
+end
+
+scheduleAttachAttempt = function(delayMs)
+    if attachAttemptQueued or overlay.canvas:IsValid() or not isMapActive() then return end
+
+    attachAttemptQueued = true
+    attachAttemptToken = attachAttemptToken + 1
+    local token = attachAttemptToken
+
+    local function run()
+        if token ~= attachAttemptToken then return end
+        ExecuteInGameThread(function()
+            if token ~= attachAttemptToken then return end
+            runAttachAttemptSafe()
+        end)
+    end
+
+    if delayMs and delayMs > 0 then
+        ExecuteWithDelay(delayMs, run)
+    else
+        run()
+    end
+end
+
+local function scheduleMapWork(delayMs, restartLoop)
+    if isMapActive() then
+        if overlay.canvas:IsValid() then
+            if restartLoop then
+                restartUpdateLoop()
+            else
+                startUpdateLoop()
+            end
+            requestUpdate()
+        else
+            scheduleAttachAttempt(delayMs or Config.AttachInitialDelayMs or 250)
+        end
+        return
+    end
+
+    cancelAttachAttempt()
+    if needsHiddenApply() then requestUpdate() end
+    stopUpdateLoop()
 end
 
 local function translateModifiers(modifierNames)
@@ -1122,7 +1263,7 @@ registerConfiguredKey("OpenMap", Config.OpenMapKey, Config.OpenMapModifiers, fun
     end
     log("Large map " .. (largeMapOpen and "opened" or "closed"))
     markOverlayStateDirty(true)
-    requestUpdate()
+    scheduleMapWork(0, true)
 end)
 
 registerConfiguredKey("HideMap", Config.HideMapKey, Config.HideMapModifiers, function()
@@ -1134,18 +1275,21 @@ registerConfiguredKey("HideMap", Config.HideMapKey, Config.HideMapModifiers, fun
     if not mapVisible then largeMapOpen = false end
     log("Minimap " .. (mapVisible and "shown" or "hidden"))
     markOverlayStateDirty(true)
-    requestUpdate()
+    scheduleMapWork(0, true)
+end)
+
+safeCall("Register ClientRestart hook", function()
+    RegisterHook("/Script/Engine.PlayerController:ClientRestart", function()
+        scheduleMapWork(Config.AttachInitialDelayMs or 250, true)
+    end)
 end)
 
 RegisterLoadMapPostHook(function()
+    stopUpdateLoop()
+    cancelAttachAttempt()
     resetOverlay()
-    requestUpdate()
+    scheduleMapWork(Config.AttachInitialDelayMs or 250, true)
 end)
 
-LoopAsync(Config.UpdateIntervalMs or 100, function()
-    requestUpdate()
-    return false
-end)
-
-requestUpdate()
+scheduleMapWork(Config.AttachInitialDelayMs or 250, true)
 log("Loaded. UMG rendering active. M opens/closes the large map, H hides/shows the minimap.")
