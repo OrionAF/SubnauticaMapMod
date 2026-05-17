@@ -237,7 +237,7 @@ local function getScriptAssetRoot()
     local modRoot = scriptPath:match("^(.*)/Scripts/[^/]+$")
     if not modRoot then return nil end
 
-    return normalizePath(modRoot .. "/Assets")
+    return normalizePath(modRoot .. "/Scripts/Assets")
 end
 
 local function getAssetPath(fileName)
