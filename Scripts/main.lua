@@ -210,14 +210,6 @@ local function isAbsolutePath(path)
     return path:match("^%a:[/\\]") ~= nil or path:match("^[/\\][/\\]") ~= nil
 end
 
-local function getAssetPath(fileName)
-    if isAbsolutePath(fileName) then return fileName end
-
-    local directories = IterateGameDirectories()
-    local win64 = directories.Game.Binaries.Win64.__absolute_path
-    return win64 .. "\\ue4ss\\Mods\\" .. MOD_NAME .. "\\Assets\\" .. fileName
-end
-
 local function fileExists(path)
     local file = io.open(path, "rb")
     if file then
@@ -225,6 +217,36 @@ local function fileExists(path)
         return true
     end
     return false
+end
+
+local function normalizePath(path)
+    return (path:gsub("/", "\\"))
+end
+
+local function joinPath(basePath, fileName)
+    return normalizePath(basePath):gsub("[\\/]+$", "") .. "\\" .. fileName
+end
+
+local function getScriptAssetRoot()
+    if not debug or not debug.getinfo then return nil end
+
+    local source = debug.getinfo(1, "S").source
+    if not source or source:sub(1, 1) ~= "@" then return nil end
+
+    local scriptPath = source:sub(2):gsub("\\", "/")
+    local modRoot = scriptPath:match("^(.*)/Scripts/[^/]+$")
+    if not modRoot then return nil end
+
+    return normalizePath(modRoot .. "/Assets")
+end
+
+local function getAssetPath(fileName)
+    if isAbsolutePath(fileName) then return fileName end
+
+    local scriptAssetRoot = getScriptAssetRoot()
+    if not scriptAssetRoot then return fileName end
+
+    return joinPath(scriptAssetRoot, fileName)
 end
 
 local function findDefaultObject(path)
@@ -1254,13 +1276,7 @@ registerConfiguredKey("OpenMap", Config.OpenMapKey, Config.OpenMapModifiers, fun
     openToggleLocked = true
     lockKeyForDebounce(function() openToggleLocked = false end)
 
-    if largeMapOpen then
-        largeMapOpen = false
-        mapVisible = true
-    else
-        largeMapOpen = true
-        mapVisible = true
-    end
+    largeMapOpen = not largeMapOpen
     log("Large map " .. (largeMapOpen and "opened" or "closed"))
     markOverlayStateDirty(true)
     scheduleMapWork(0, true)
