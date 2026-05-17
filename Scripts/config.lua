@@ -61,7 +61,7 @@ local Config = {
     },
 
     LargeMap = {
-        UpdateIntervalMs = 100,
+        UpdateIntervalMs = 200,
         Anchor = "Center",
         WidthRatio = 0.90,
         HeightRatio = 0.72,
