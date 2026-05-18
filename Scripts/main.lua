@@ -1505,6 +1505,14 @@ registerConfiguredKey("OpenMap", Config.OpenMapKey, Config.OpenMapModifiers, fun
     scheduleMapWork(0, true)
 end)
 
+RegisterKeyBind(Key.ESCAPE, function()
+    if not largeMapOpen then return end
+    largeMapOpen = false
+    log("Large map closed (ESC)")
+    markOverlayStateDirty(true)
+    scheduleMapWork(0, true)
+end)
+
 registerConfiguredKey("HideMap", Config.HideMapKey, Config.HideMapModifiers, function()
     if hideToggleLocked then return end
     hideToggleLocked = true
