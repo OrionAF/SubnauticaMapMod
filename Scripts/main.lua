@@ -251,7 +251,7 @@ local function getScriptAssetRoot()
     local modRoot = scriptPath:match("^(.*)/Scripts/[^/]+$")
     if not modRoot then return nil end
 
-    return normalizePath(modRoot .. "/Scripts/Assets")
+    return normalizePath(modRoot .. "/Scripts")
 end
 
 local function getAssetPath(fileName)
@@ -343,7 +343,7 @@ local function loadMapTexture()
 end
 
 local function loadPixelTexture()
-    return loadTexture("pixel.png", "pixel")
+    return loadTexture("pixel.png.lua", "pixel")
 end
 
 local function loadArrowTexture()

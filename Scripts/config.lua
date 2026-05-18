@@ -23,7 +23,7 @@ local Config = {
     KeyDebounceMs = 600,
 
     Map = {
-        ImageFile = "mapgenie_world_cropped.png",
+        ImageFile = "mapgenie_world_cropped.png.lua",
         ImageWidth = 1144,
         ImageHeight = 482,
         ProjectionMode = "MapGenie",
@@ -92,7 +92,7 @@ local Config = {
 
     Marker = {
         -- Player marker image file (directional arrow)
-        ImageFile = "MapArrowRight.png",
+        ImageFile = "MapArrowRight.png.lua",
         -- Marker size in pixels
         Size = 12,
         -- Pixel movement threshold before redrawing the marker (avoids micro-updates)
