@@ -80,6 +80,15 @@ local Config = {
         Color = { R = 0.0, G = 0.9, B = 1.0, A = 1.0 },
     },
 
+    FogOfWar = {
+        Enabled = true,
+        GridWidth = 57,
+        GridHeight = 24,
+        RevealRadius = 2,
+        SaveFile = "fog_state.dat",
+        FogAlpha = 0.95,
+    },
+
     Debug = {
         LogPosition = false,
         DrawCoordinates = false,

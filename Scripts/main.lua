@@ -32,11 +32,19 @@ local cachedScreenH = 1080
 local viewportDirty = true
 local viewportPollCountdown = 0
 
+local fogGrid = {}
+local fogDirty = false
+local fogLastCellX = nil
+local fogLastCellY = nil
+local isFogEnabled
+local loadFogTexture
+
 local renderingLibrary = CreateInvalidObject()
 local widgetLayoutLibrary = CreateInvalidObject()
 local mapTexture = CreateInvalidObject()
 local pixelTexture = CreateInvalidObject()
 local arrowTexture = CreateInvalidObject()
+local fogTexture = CreateInvalidObject()
 
 local overlay = {
     hudScreen = CreateInvalidObject(),
@@ -59,6 +67,9 @@ local overlay = {
     markerSlot = nil,
     mapTextureApplied = false,
     markerTextureApplied = false,
+    fog = CreateInvalidObject(),
+    fogSlot = nil,
+    fogTextureApplied = false,
     lastCanvasVisible = nil,
     lastDimVisible = nil,
     lastMarkerVisible = nil,
@@ -185,6 +196,9 @@ local function clearOverlayWidgetRefs(clearOwner)
     overlay.markerSlot = nil
     overlay.mapTextureApplied = false
     overlay.markerTextureApplied = false
+    overlay.fog = CreateInvalidObject()
+    overlay.fogSlot = nil
+    overlay.fogTextureApplied = false
     resetOverlayCaches()
 end
 
@@ -556,6 +570,13 @@ local function attachOverlay()
     setSlotTopLeft(overlay.markerSlot, 1001)
     overlay.markerTextureApplied = arrow:IsValid()
 
+    if isFogEnabled() then
+        local fogTex = loadFogTexture()
+        overlay.fog, overlay.fogSlot = createImage(overlay.canvas, widgetOuter, 995, fogTex, COLOR_WHITE)
+        setSlotTopLeft(overlay.fogSlot, 995)
+        overlay.fogTextureApplied = fogTex:IsValid()
+    end
+
     overlay.marker:SetRenderTransformPivot(vec2(0.5, 0.5))
     overlay.canvas:SetVisibility(HIDDEN)
 
@@ -762,6 +783,182 @@ local function worldToMapGenieUV(worldX, worldY)
     return u, v
 end
 
+isFogEnabled = function()
+    return Config.FogOfWar and Config.FogOfWar.Enabled ~= false
+end
+
+local function initFogGrid()
+    local fogCfg = Config.FogOfWar or {}
+    local w = fogCfg.GridWidth or 57
+    local h = fogCfg.GridHeight or 24
+    fogGrid = {}
+    for y = 1, h do
+        fogGrid[y] = {}
+        for x = 1, w do
+            fogGrid[y][x] = false
+        end
+    end
+end
+
+local function getFogSavePath()
+    local fogCfg = Config.FogOfWar or {}
+    return getAssetPath(fogCfg.SaveFile or "fog_state.dat")
+end
+
+local function saveFogState()
+    local fogCfg = Config.FogOfWar or {}
+    local w = fogCfg.GridWidth or 57
+    local h = fogCfg.GridHeight or 24
+    local path = getFogSavePath()
+    local file = io.open(path, "w")
+    if not file then return end
+    for y = 1, h do
+        local row = {}
+        for x = 1, w do
+            row[x] = (fogGrid[y] and fogGrid[y][x]) and "1" or "0"
+        end
+        file:write(table.concat(row) .. "\n")
+    end
+    file:close()
+end
+
+local function loadFogState()
+    local fogCfg = Config.FogOfWar or {}
+    local w = fogCfg.GridWidth or 57
+    local h = fogCfg.GridHeight or 24
+    local path = getFogSavePath()
+    local file = io.open(path, "r")
+    if not file then return false end
+    for y = 1, h do
+        local line = file:read("*l")
+        if not line then break end
+        if not fogGrid[y] then fogGrid[y] = {} end
+        for x = 1, math.min(w, #line) do
+            fogGrid[y][x] = line:sub(x, x) == "1"
+        end
+    end
+    file:close()
+    return true
+end
+
+local function getFogTGAPath()
+    return getAssetPath("fog_overlay.tga")
+end
+
+local function writeFogTGA()
+    local fogCfg = Config.FogOfWar or {}
+    local w = fogCfg.GridWidth or 57
+    local h = fogCfg.GridHeight or 24
+    local alpha = math.floor((fogCfg.FogAlpha or 0.95) * 255)
+    local path = getFogTGAPath()
+
+    local file = io.open(path, "wb")
+    if not file then
+        log("Failed to write fog TGA: " .. path)
+        return false
+    end
+
+    file:write(string.char(
+        0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        w % 256, math.floor(w / 256),
+        h % 256, math.floor(h / 256),
+        32, 0x28
+    ))
+
+    local revealed = string.char(0, 0, 0, 0)
+    local fog = string.char(0, 0, 0, alpha)
+    local parts = {}
+    for y = 1, h do
+        local row = fogGrid[y]
+        for x = 1, w do
+            parts[#parts + 1] = (row and row[x]) and revealed or fog
+        end
+    end
+
+    file:write(table.concat(parts))
+    file:close()
+    return true
+end
+
+local function worldToUV(worldX, worldY)
+    local mapConfig = Config.Map
+    if mapConfig.ProjectionMode == "MapGenie" then
+        return worldToMapGenieUV(worldX, worldY)
+    end
+    local bounds = getBoundsForLocation(worldX, worldY)
+    local rangeX = bounds.MaxX - bounds.MinX
+    local rangeY = bounds.MaxY - bounds.MinY
+    if rangeX == 0 or rangeY == 0 then return nil, nil end
+    local u = (worldX - bounds.MinX) / rangeX
+    local v = (worldY - bounds.MinY) / rangeY
+    if mapConfig.InvertVertical ~= false then v = 1.0 - v end
+    u = clamp(u, 0.0, 1.0)
+    v = clamp(v, 0.0, 1.0)
+    return u, v
+end
+
+local function updateFogAtPosition(worldX, worldY)
+    if not isFogEnabled() then return end
+
+    local u, v = worldToUV(worldX, worldY)
+    if not u or not v then return end
+
+    local fogCfg = Config.FogOfWar or {}
+    local fw = fogCfg.GridWidth or 57
+    local fh = fogCfg.GridHeight or 24
+    local cx = clamp(math.floor(u * fw) + 1, 1, fw)
+    local cy = clamp(math.floor(v * fh) + 1, 1, fh)
+
+    if cx == fogLastCellX and cy == fogLastCellY then return end
+    fogLastCellX = cx
+    fogLastCellY = cy
+
+    local radius = fogCfg.RevealRadius or 2
+    local changed = false
+    for dy = -radius, radius do
+        local gy = cy + dy
+        if gy >= 1 and gy <= fh then
+            if not fogGrid[gy] then fogGrid[gy] = {} end
+            for dx = -radius, radius do
+                local gx = cx + dx
+                if gx >= 1 and gx <= fw then
+                    if not fogGrid[gy][gx] then
+                        fogGrid[gy][gx] = true
+                        changed = true
+                    end
+                end
+            end
+        end
+    end
+
+    if changed then
+        fogDirty = true
+        writeFogTGA()
+        saveFogState()
+    end
+end
+
+loadFogTexture = function(forceReload)
+    if not forceReload and fogTexture:IsValid() then return fogTexture end
+
+    local path = getFogTGAPath()
+    if not fileExists(path) then return fogTexture end
+
+    local world = UEHelpers.GetWorld()
+    local renderer = getRenderingLibrary()
+    if not world:IsValid() or not renderer:IsValid() then return fogTexture end
+
+    local tex = safeCall("ImportFogTexture", function()
+        return renderer:ImportFileAsTexture2D(world, path)
+    end)
+
+    if tex and tex:IsValid() then
+        fogTexture = tex
+    end
+
+    return fogTexture
+end
+
 local function getPlayerLocationAndForward()
     pawnCheckCountdown = pawnCheckCountdown - 1
     if pawnCheckCountdown <= 0 or not cachedPawn:IsValid() then
@@ -860,6 +1057,8 @@ local function collectFrameSample()
     lastWorldY = worldY
     lastForwardX = forwardX
     lastForwardY = forwardY
+
+    updateFogAtPosition(worldX, worldY)
 
     sample.hidden = false
     sample.worldX = worldX
@@ -1021,6 +1220,26 @@ local function applyDrawState(state)
         setSlotRect(overlay.borderLeftSlot, state.x, state.y, state.thickness, state.height, 991)
     end
 
+    if isFogEnabled() and overlay.fog:IsValid() then
+        if layoutChanged then
+            setSlotRect(overlay.fogSlot, state.x, state.y, state.width, state.height, 995)
+        end
+        if fogDirty then
+            fogDirty = false
+            local fogTex = loadFogTexture(true)
+            if fogTex:IsValid() then
+                setImageTexture(overlay.fog, fogTex, COLOR_WHITE)
+                overlay.fogTextureApplied = true
+            end
+        elseif not overlay.fogTextureApplied then
+            local fogTex = loadFogTexture()
+            if fogTex:IsValid() then
+                setImageTexture(overlay.fog, fogTex, COLOR_WHITE)
+                overlay.fogTextureApplied = true
+            end
+        end
+    end
+
     local hasPoint = state.point ~= nil
     setMarkerVisibility(hasPoint)
     if not hasPoint then
@@ -1071,6 +1290,10 @@ local function resetOverlay()
     mapTexture = CreateInvalidObject()
     pixelTexture = CreateInvalidObject()
     arrowTexture = CreateInvalidObject()
+    fogTexture = CreateInvalidObject()
+    fogLastCellX = nil
+    fogLastCellY = nil
+    fogDirty = false
     cachedPawn = CreateInvalidObject()
     pawnCheckCountdown = 0
     viewportPollCountdown = 0
@@ -1306,6 +1529,15 @@ RegisterLoadMapPostHook(function()
     resetOverlay()
     scheduleMapWork(Config.AttachInitialDelayMs or 250, true)
 end)
+
+if isFogEnabled() then
+    initFogGrid()
+    if not loadFogState() then
+        log("Fog of war: no save found, starting fresh")
+    end
+    writeFogTGA()
+    log("Fog of war enabled (" .. (Config.FogOfWar.GridWidth or 57) .. "x" .. (Config.FogOfWar.GridHeight or 24) .. ")")
+end
 
 scheduleMapWork(Config.AttachInitialDelayMs or 250, true)
 log("Loaded. UMG rendering active. M opens/closes the large map, H hides/shows the minimap.")
